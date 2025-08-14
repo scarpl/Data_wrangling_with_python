@@ -24,7 +24,7 @@ The aim is to demonstrate skills in **data wrangling**, **API usage**, and **exp
 
 ### Dataset 2 – Air Quality Data
 - **Source:** [European Environment Agency (EEA)](https://www.eea.europa.eu/)
-- **Method:** Programmatic retrieval via Python API wrapper
+- **Method:** CSV file
 - **Variables:**
   - `date` — date of observation (daily)
   - `pm25` — daily average PM2.5 concentration (µg/m³)
