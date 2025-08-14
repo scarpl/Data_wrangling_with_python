@@ -6,10 +6,6 @@ import pandas as pd
 import requests
 
 
-def _safe_requests():
-    """Import 'requests' safely to prevent notebook shadowing issues."""
-    import importlib
-    return importlib.import_module("requests")
 
 def _get_with_retry(
     url: str,
@@ -22,19 +18,33 @@ def _get_with_retry(
     GET with simple retry/backoff for transient errors (HTTP 429/5xx).
     Honors 'Retry-After' when present.
     """
-    #requests = _safe_requests()
     backoff = 1.0
-    for _ in range(max_retries):
+    last_err: Optional[Exception] = None
+    for i in range(max_retries):
         resp = requests.get(url, params=params, headers=headers, timeout=timeout)
         if resp.status_code in (429, 500, 502, 503, 504):
             ra = resp.headers.get("Retry-After")
             wait = float(ra) if ra and str(ra).replace(".", "", 1).isdigit() else backoff
             time.sleep(wait)
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+            if resp.status_code in (429, 500, 502, 503, 504):
+                ra = resp.headers.get("Retry-After")
+                wait = float(ra) if ra and str(ra).replace(".", "", 1).isdigit() else backoff
+                time.sleep(wait)
+                backoff = min(backoff * 2, 30.0)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.RequestException as exc:  # includes ChunkedEncodingError
+            last_err = exc
+            time.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
             continue
         resp.raise_for_status()
         return resp.json()
     raise RuntimeError(f"Exceeded retries for {url}")
+    raise RuntimeError(f"Exceeded retries for {url}") from last_err
 
 def build_weather_daily(lat: float,lon: float,start: str,end: str, api_key: Optional[str] = None
 ) -> pd.DataFrame:
