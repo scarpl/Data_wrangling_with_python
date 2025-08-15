@@ -225,3 +225,114 @@ def load_and_aggregate_from_openaq(
         elif not daily and ("datetime_utc" in df.columns):
             df.insert(1, "city", city)
     return df
+    
+def export_openaq_daily_csv(
+    city: str = "Rome",
+    start_date: str = "2024-01-01",
+    end_date: str = "2024-12-31",
+    parameters: Tuple[str, ...] = ("pm25", "no2"),
+    out_path: str = "data/raw/openaq_rome_2024_daily.csv",
+    api_key: Optional[str] = None,
+    verbose: bool = True,
+    chunk_freq: str = "W",         # "M"=mensile, "W"=settimanale, "15D"=15 giorni
+    # --- filtri/limiti per ridurre il payload ---
+    sensors_per_param: int = 2,
+    sensor_limit: int = 250,
+    radius_m: int = 5000,
+    center: Tuple[float, float] = (41.9028, 12.4964),  # Roma centro (lat, lon)
+    page_limit: int = 100,
+    # se il tuo wrapper/cliente supporta altri argomenti (use_session, date_output, ecc.)
+    **extra_kwargs: Any,
+) -> str:
+    """
+    Programmatically download daily air quality (OpenAQ v3), chunked by time,
+    apply sensor/radius limits, and save a single CSV locally.
+
+    Returns:
+        str: path of the saved CSV.
+    """
+    # Import interno per evitare vincoli d’ordine nel notebook
+    try:
+        load_fn = load_and_aggregate_from_openaq
+    except NameError:
+        raise RuntimeError(
+            "load_and_aggregate_from_openaq() not found. Ensure it is defined in this module."
+        )
+
+    # Costruisci finestre temporali “piccole” per evitare 429/timeout
+    start_ts = pd.Timestamp(start_date)
+    end_ts   = pd.Timestamp(end_date) + pd.Timedelta(hours=23, minutes=59, seconds=59)
+
+    edges = pd.date_range(start=start_ts, end=end_ts, freq=chunk_freq)
+    if len(edges) == 0 or edges[0] > start_ts:
+        edges = pd.DatetimeIndex([start_ts]).append(edges)
+    if edges[-1] < end_ts:
+        edges = edges.append(pd.DatetimeIndex([end_ts]))
+
+    ranges = []
+    for s, e in zip(edges[:-1], edges[1:]):
+        s_str = s.date().isoformat()
+        e_str = min((e - pd.Timedelta(seconds=1)).date().isoformat(), end_date)
+        if s_str <= e_str:
+            ranges.append((s_str, e_str))
+
+    frames = []
+    for (s, e) in ranges:
+        if verbose:
+            print(f"[OpenAQ] Fetch {city} {parameters} {s} → {e} | sensors_per_param={sensors_per_param}, "
+                  f"sensor_limit={sensor_limit}, radius_m={radius_m}, page_limit={page_limit}")
+        df = load_fn(
+            city=city,
+            parameters=parameters,
+            start_date=s,
+            end_date=e,
+            daily=True,
+            api_key=api_key,
+            verbose=verbose,
+            # --- inoltra filtri/limiti verso il loader ---
+            sensors_per_param=sensors_per_param,
+            sensor_limit=sensor_limit,
+            radius_m=radius_m,
+            center=center,
+            page_limit=page_limit,
+            # opzionale: forza output date-only se supportato
+            # date_output="date",
+            **extra_kwargs,
+        )
+        if df is None or df.empty:
+            continue
+
+        # normalizza la chiave 'date' a pura data
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.date
+
+        keep = ["date"] + [c for c in ("pm25", "no2") if c in df.columns]
+        frames.append(df[keep])
+
+    if not frames:
+        raise RuntimeError("No data returned from OpenAQ for the selected period/parameters.")
+
+    out = pd.concat(frames, ignore_index=True)
+    out = out.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    out.to_csv(out_path, index=False)
+    if verbose:
+        print(f"[OpenAQ] Saved daily CSV → {out_path} | rows: {len(out)} | cols: {list(out.columns)}")
+    return out_path
+
+if __name__ == "__main__":
+    aq_rome= load_and_aggregate_from_openaq(
+    city="Rome",
+    parameters=("pm25","no2"),
+    start_date="2022-01-01",
+    end_date="2022-12-31",
+    daily=True,
+    api_key="1e4497f55593ef98625dd6d8686aacfbb7bf4661f96b4cb635595927935bf7f7",
+    sensors_per_param=2,
+    sensor_limit=250,
+    verbose=False
+)
+
+    aq_rome.to_csv("data/raw/air_quality_rome_2022.csv", index=False, encoding="utf-8")
+    print("Air quality data for Rome in 2022 saved to 'data/raw/air_quality_rome_2022.csv'.")
